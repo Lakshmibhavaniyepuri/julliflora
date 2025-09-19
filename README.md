@@ -42,35 +42,27 @@ Exports GeoTIFF files ready for further GIS applications.
 
 # Julliflora Project
 
+
 ## 📊 Results
 
 ### Model Performance
-
-- **Accuracy**
-  ![Accuracy](accuracy.png)
-
-- **F1 Score**
-  ![F1 Score](f1.png)
-
-- **RMSE**
-  ![RMSE](rmse.png)
+<div align="center">
+  <img src="accuracy.png" alt="Accuracy" width="300"/>
+  <img src="f1.png" alt="F1 Score" width="300"/>
+  <img src="rmse.png" alt="RMSE" width="300"/>
+</div>
 
 ### Model Comparisons
-
-- **SVM**
-  ![SVM](svm.png)
-
-- **Random Forest**
-  ![Random Forest](rf.png)
-
-- **Gradient Boosted Trees**
-  ![GBT](gbt.png)
+<div align="center">
+  <img src="svm.png" alt="SVM" width="300"/>
+  <img src="rf.png" alt="Random Forest" width="300"/>
+  <img src="gbt.png" alt="GBT" width="300"/>
+</div>
 
 ### Feature Analysis
+<div align="center">
+  <img src="pca.png" alt="PCA" width="300"/>
+  <img src="training%20samples.png" alt="Training Samples" width="300"/>
+</div>
 
-- **PCA Visualization**
-  ![PCA](pca.png)
-
-- **Training Samples**
-  ![Training Samples](trainingsamples.png)
 
