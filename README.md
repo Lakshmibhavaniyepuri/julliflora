@@ -8,7 +8,7 @@ It leverages Principal Component Analysis (PCA) to enhance feature separability 
 🗺️ AOI Mapping: Automatic visualization of the Area of Interest (AOI) on GEE.
 🛰️ Sentinel-2 Data Processing: Filters images by date, bounds, and cloud coverage (<1%).
 📊 PCA Transformation: Reduces dimensionality for better classifier performance.
-----
+
 Machine Learning Classifiers:
 
 🤖 SVM (Support Vector Machine)
@@ -18,7 +18,7 @@ Machine Learning Classifiers:
 📏 Juliflora Area Calculation: Computes total affected area in square meters for each classifier.
 💾 Export Functionality: Classified maps are exported as GeoTIFF for further GIS analysis.
 🎨 Interactive Legend: Custom legend for visualization on GEE map.
-------
+
 🛠 Tools & Technologies
 
 Google Earth Engine – cloud-based geospatial processing
@@ -26,16 +26,51 @@ Sentinel-2 Level-2A SR Imagery – multi-spectral satellite imagery
 JavaScript – GEE scripting
 Machine Learning – SVM, RF, GTB classifiers
 Export – GeoTIFF for GIS analysis
-------
+
 ⚡ How to Use
 
 Open Google Earth Engine Code Editor.
 Upload the AOI shapefile and feature collections for Juliflora and non-Juliflora.
 Paste the script and run it.
 Visualize classified layers and export results to Google Drive.
------
+
 📈 Results
 
 Provides accurate mapping of Juliflora spread over the AOI.
 Generates classifier-wise performance metrics (Precision, Recall, F1 Score, RMSE).
 Exports GeoTIFF files ready for further GIS applications.
+
+# Julliflora Project
+
+## 📊 Results
+
+### Model Performance
+
+- **Accuracy**
+  ![Accuracy](accuracy.png)
+
+- **F1 Score**
+  ![F1 Score](f1.png)
+
+- **RMSE**
+  ![RMSE](rmse.png)
+
+### Model Comparisons
+
+- **SVM**
+  ![SVM](svm.png)
+
+- **Random Forest**
+  ![Random Forest](rf.png)
+
+- **Gradient Boosted Trees**
+  ![GBT](gbt.png)
+
+### Feature Analysis
+
+- **PCA Visualization**
+  ![PCA](pca.png)
+
+- **Training Samples**
+  ![Training Samples](trainingsamples.png)
+
