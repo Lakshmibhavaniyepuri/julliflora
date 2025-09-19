@@ -1,0 +1,348 @@
+
+
+///----------------------------------ADDING AOI LAYER----------------------------------------------------------------------------------------------------------------------------------// Add AOI and Center Map
+Map.addLayer(table, {}, 'AOI');
+Map.centerObject(table, 11);
+
+
+//----------------------------Load Sentinel-2 Image Collection--------------------
+var collection = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+                  .filterDate('2023-08-01', '2023-11-30')
+                  .filterBounds(table)
+                  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 1));
+
+var medianpixels = collection.median();
+var dataset = medianpixels.clip(table);
+Map.addLayer(dataset, {bands: ['B8', 'B4', 'B3'], min: 500, max: 2500, gamma: 1}, 'Sentinel-2 Mosaic');
+
+//-------------------------Assign Class Labels---------------------------
+var julliflora = julliflora.map(function(feature) {
+  return feature.set('landcover', 1);
+});
+
+
+var nonJulliflora = nonjulliflora.map(function(feature) {
+  return feature.set('landcover', 0);
+});
+
+//-----------------------------Merge Feature Collections--------------------
+var newfc = julliflora.merge(nonjulliflora);
+print('Merged FeatureCollection:', newfc);
+
+function computePCA(image, scale, region) {
+  var bands = ['B12', 'B8A', 'B4','B8'];
+  
+  // Reduce region to get mean and standard deviation
+  var meanDict = image.select(bands).reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: region,
+    scale: scale,
+    bestEffort: true
+  });
+
+  var stdDevDict = image.select(bands).reduceRegion({
+    reducer: ee.Reducer.stdDev(),
+    geometry: region,
+    scale: scale,
+    bestEffort: true
+  });
+//-------------------PCA CALCULATION--------------------------------------------
+  var mean = ee.Image.constant(meanDict.values(bands)).rename(bands);
+  var stdDev = ee.Image.constant(stdDevDict.values(bands)).rename(bands);
+
+  // Standardize the image
+  var standardized = image.select(bands).subtract(mean).divide(stdDev);
+
+  // Convert to array image
+  var arrays = standardized.toArray();
+
+  // Compute covariance
+  var covar = arrays.reduceRegion({
+    reducer: ee.Reducer.centeredCovariance(),
+    geometry: region,
+    scale: scale,
+    maxPixels: 1e9
+  });
+
+  var covarArray = ee.Array(covar.get('array'));
+  var eigens = covarArray.eigen();
+  var eigenVectors = eigens.slice(1, 1);
+
+  //----------------------------Project the data onto the principal components--------------
+  var centered = arrays.toArray(1);
+  var pca = ee.Image(eigenVectors).matrixMultiply(centered)
+              .arrayProject([0])
+              .arrayFlatten([['PC1', 'PC2', 'PC3', 'PC4']]);
+
+  return pca;
+}
+
+
+//------------------------------Apply PCA to the dataset-----------------
+var pcaImage = computePCA(dataset, 10, table);
+Map.addLayer(pcaImage, {bands: ['PC1', 'PC2', 'PC3'], min: -2, max: 2, gamma: 1.2}, 'PCA Image');
+
+//----------------- Sample Training Data------------------------------------
+var pcaBands = ['PC1', 'PC2', 'PC3', 'PC4'];
+var trainingPCA = pcaImage.select(pcaBands).sampleRegions({
+  collection: newfc,
+  properties: ['landcover'],
+  scale: 10
+});
+
+// ------------------Split Data for Training and Testing---------------------------------
+var withRandomPCA = trainingPCA.randomColumn('random');
+var split = 0.8;
+var trainingPartitionPCA = withRandomPCA.filter(ee.Filter.lt('random', split));
+var testingPartitionPCA = withRandomPCA.filter(ee.Filter.gte('random', split));
+
+//-----------------------------Train SVM Classifier with PCA-------------------------------------
+var classifierSVM_PCA = ee.Classifier.libsvm().train({
+  features: trainingPartitionPCA,
+  classProperty: 'landcover',
+  inputProperties: pcaBands
+});
+var classifiedSVM_PCA = pcaImage.select(pcaBands).classify(classifierSVM_PCA);
+Map.addLayer(classifiedSVM_PCA.updateMask(classifiedSVM_PCA.neq(0)), {min: 1, max: 2, palette: ['#3434eb']}, 'SVM PCA Classification');
+
+//--------------------------- Train Random Forest Classifier with PCA------------------------------
+var classifierRF_PCA = ee.Classifier.smileRandomForest(100).train({
+  features: trainingPartitionPCA,
+  classProperty: 'landcover',
+  inputProperties: pcaBands
+});
+var classifiedRF_PCA = pcaImage.select(pcaBands).classify(classifierRF_PCA);
+Map.addLayer(classifiedRF_PCA.updateMask(classifiedRF_PCA.neq(0)), {min: 1, max: 2, palette: ['#34eb5b']}, 'RF PCA Classification');
+
+//-------------Train GTB Classifier with PCA--------------------------------------------
+var classifierGTB_PCA = ee.Classifier.smileGradientTreeBoost(100).train({
+  features: trainingPartitionPCA,
+  classProperty: 'landcover',
+  inputProperties: pcaBands
+});
+var classifiedGTB_PCA = pcaImage.select(pcaBands).classify(classifierGTB_PCA);
+Map.addLayer(classifiedGTB_PCA.updateMask(classifiedGTB_PCA.neq(0)), {min: 1, max: 2, palette: ['#f5eb34']}, 'GTB PCA Classification');
+
+//-------------------------Accuracy Assessment -SVM---------------------------
+var testSVM_PCA = testingPartitionPCA.classify(classifierSVM_PCA);
+var confusionMatrixSVM_PCA = testSVM_PCA.errorMatrix('landcover', 'classification');
+print('SVM PCA Confusion Matrix:', confusionMatrixSVM_PCA);
+print('SVM PCA Accuracy:', confusionMatrixSVM_PCA.accuracy());
+print('SVM PCA Accuracy:', confusionMatrixSVM_PCA.accuracy());
+
+//------------------------Get Confusion Matrix values---------------------------
+var svmMatrixArray = confusionMatrixSVM_PCA.array();
+print('SVM PCA Confusion Matrix Array:', svmMatrixArray);
+
+// Extract values (binary classification: 0 = non-Juliflora, 1 = Juliflora)
+var svmTP = ee.Number(svmMatrixArray.get([1, 1])); // True Positives
+var svmFP = ee.Number(svmMatrixArray.get([0, 1])); // False Positives
+var svmFN = ee.Number(svmMatrixArray.get([1, 0])); // False Negatives
+
+// Compute Precision, Recall, F1
+var svmPrecision = svmTP.divide(svmTP.add(svmFP));
+var svmRecall = svmTP.divide(svmTP.add(svmFN));
+var svmF1 = svmPrecision.multiply(svmRecall).multiply(2).divide(svmPrecision.add(svmRecall));
+
+print('SVM PCA Precision:', svmPrecision);
+print('SVM PCA Recall:', svmRecall);
+print('SVM PCA F1 Score:', svmF1);
+
+// Compute RMSE
+var svmRMSE = testSVM_PCA.map(function(f) {
+  var actual = ee.Number(f.get('landcover'));
+  var predicted = ee.Number(f.get('classification'));
+  return f.set('squaredError', actual.subtract(predicted).pow(2));
+});
+var svmError = svmRMSE.reduceColumns({
+  reducer: ee.Reducer.mean(),
+  selectors: ['squaredError']
+});
+print('SVM PCA RMSE:', ee.Number(svmError.get('mean')).sqrt());
+
+//-----------------------Calculate Juliflora area -----------------------------------------------
+var julifloraMask = classifiedSVM_PCA.eq(1);  // Change to desired classifier (SVM, RF, or GTB)
+var pixelArea = ee.Image.pixelArea();
+
+// Multiply mask by pixel area (only where Juliflora is classified)
+var julifloraAreaImage = julifloraMask.multiply(pixelArea);
+
+// Reduce to total area over AOI
+var julifloraArea = julifloraAreaImage.reduceRegion({
+  reducer: ee.Reducer.sum(),
+  geometry: table, // or AOI if you renamed
+  scale: 10,
+  maxPixels: 1e13
+});
+
+// Print result in square meters
+print('Juliflora Area -SVM (sqm):', julifloraArea);
+//-------------------------Accuracy Assessment -RF---------------------------
+
+var testRF_PCA = testingPartitionPCA.classify(classifierRF_PCA);
+var confusionMatrixRF_PCA = testRF_PCA.errorMatrix('landcover', 'classification');
+print('RF PCA Confusion Matrix:', confusionMatrixRF_PCA);
+print('RF PCA Accuracy:', confusionMatrixRF_PCA.accuracy());
+
+print('RF PCA Accuracy:', confusionMatrixRF_PCA.accuracy());
+
+//------------------Get Confusion Matrix values---------------------------
+var rfMatrixArray = confusionMatrixRF_PCA.array();
+print('RF PCA Confusion Matrix Array:', rfMatrixArray);
+
+var rfTP = ee.Number(rfMatrixArray.get([1, 1])); // True Positives
+var rfFP = ee.Number(rfMatrixArray.get([0, 1])); // False Positives
+var rfFN = ee.Number(rfMatrixArray.get([1, 0])); // False Negatives
+
+// Compute Precision, Recall, F1
+var rfPrecision = rfTP.divide(rfTP.add(rfFP));
+var rfRecall = rfTP.divide(rfTP.add(rfFN));
+var rfF1 = rfPrecision.multiply(rfRecall).multiply(2).divide(rfPrecision.add(rfRecall));
+
+print('RF PCA Precision:', rfPrecision);
+print('RF PCA Recall:', rfRecall);
+print('RF PCA F1 Score:', rfF1);
+
+// Compute RMSE
+var rfRMSE = testRF_PCA.map(function(f) {
+  var actual = ee.Number(f.get('landcover'));
+  var predicted = ee.Number(f.get('classification'));
+  return f.set('squaredError', actual.subtract(predicted).pow(2));
+});
+var rfError = rfRMSE.reduceColumns({
+  reducer: ee.Reducer.mean(),
+  selectors: ['squaredError']
+});
+print('RF PCA RMSE:', ee.Number(rfError.get('mean')).sqrt());
+
+//--------------------------Calculate Juliflora area ----------------------------------------
+var julifloraMask = classifiedRF_PCA.eq(1);  // Change to desired classifier (SVM, RF, or GTB)
+var pixelArea = ee.Image.pixelArea();
+
+// Multiply mask by pixel area (only where Juliflora is classified)
+var julifloraAreaImage = julifloraMask.multiply(pixelArea);
+
+// Reduce to total area over AOI
+var julifloraArea = julifloraAreaImage.reduceRegion({
+  reducer: ee.Reducer.sum(),
+  geometry: table, // or AOI if you renamed
+  scale: 10,
+  maxPixels: 1e13
+});
+
+// Print result in square meters
+print('Juliflora Area -RF (sqm):', julifloraArea);
+//-------------------------Accuracy Assessment -GTB---------------------------
+
+var testGTB_PCA = testingPartitionPCA.classify(classifierGTB_PCA);
+var confusionMatrixGTB_PCA = testGTB_PCA.errorMatrix('landcover', 'classification');
+print('GTB PCA Confusion Matrix:', confusionMatrixGTB_PCA);
+print('GTB PCA Accuracy:', confusionMatrixGTB_PCA.accuracy());
+
+print('GTB PCA Accuracy:', confusionMatrixGTB_PCA.accuracy());
+
+// Get Confusion Matrix values
+var gtbMatrixArray = confusionMatrixGTB_PCA.array();
+print('GTB PCA Confusion Matrix Array:', gtbMatrixArray);
+
+var gtbTP = ee.Number(gtbMatrixArray.get([1, 1])); // True Positives
+var gtbFP = ee.Number(gtbMatrixArray.get([0, 1])); // False Positives
+var gtbFN = ee.Number(gtbMatrixArray.get([1, 0])); // False Negatives
+
+// Compute Precision, Recall, F1
+var gtbPrecision = gtbTP.divide(gtbTP.add(gtbFP));
+var gtbRecall = gtbTP.divide(gtbTP.add(gtbFN));
+var gtbF1 = gtbPrecision.multiply(gtbRecall).multiply(2).divide(gtbPrecision.add(gtbRecall));
+
+print('GTB PCA Precision:', gtbPrecision);
+print('GTB PCA Recall:', gtbRecall);
+print('GTB PCA F1 Score:', gtbF1);
+
+// Compute RMSE
+var gtbRMSE = testGTB_PCA.map(function(f) {
+  var actual = ee.Number(f.get('landcover'));
+  var predicted = ee.Number(f.get('classification'));
+  return f.set('squaredError', actual.subtract(predicted).pow(2));
+});
+var gtbError = gtbRMSE.reduceColumns({
+  reducer: ee.Reducer.mean(),
+  selectors: ['squaredError']
+});
+print('GTB PCA RMSE:', ee.Number(gtbError.get('mean')).sqrt());
+
+//---------------------------Calculate Juliflora area -----------------------------------------------
+var julifloraMask = classifiedGTB_PCA.eq(1);  // Change to desired classifier (SVM, RF, or GTB)
+var pixelArea = ee.Image.pixelArea();
+
+// Multiply mask by pixel area (only where Juliflora is classified)
+var julifloraAreaImage = julifloraMask.multiply(pixelArea);
+
+// Reduce to total area over AOI
+var julifloraArea = julifloraAreaImage.reduceRegion({
+  reducer: ee.Reducer.sum(),
+  geometry: table, // or AOI if you renamed
+  scale: 10,
+  maxPixels: 1e13
+});
+
+// Print result in square meters
+print('Juliflora Area -GTB (sqm):', julifloraArea);
+//-----------------------------Export Classified Images--------------------
+Export.image.toDrive({
+  image: classifiedSVM_PCA,
+  description: 'Juliflora_Classified_SVM_PCA',
+  scale: 10,
+  region: AOI,
+  maxPixels: 1e13,
+  folder: 'Juliflora_PCA_Export',
+  fileFormat: 'GeoTIFF'
+});
+
+Export.image.toDrive({
+  image: classifiedRF_PCA,
+  description: 'Juliflora_Classified_RF_PCA',
+  scale: 10,
+  region: AOI,
+  maxPixels: 1e13,
+  folder: 'Juliflora_PCA_Export',
+  fileFormat: 'GeoTIFF'
+});
+
+Export.image.toDrive({
+  image: classifiedGTB_PCA,
+  description: 'Juliflora_Classified_GTB_PCA',
+  scale: 10,
+  region: AOI,
+  maxPixels: 1e13,
+  folder: 'Juliflora_PCA_Export',
+  fileFormat: 'GeoTIFF'
+});
+
+// Legend and Title
+var legend = ui.Panel({
+  style: {
+    position: 'bottom-left',
+    padding: '8px 15px',
+    backgroundColor: 'rgba(255, 255, 255, 0.7)',
+    border: '1px solid black'
+  }
+});
+legend.add(ui.Label({value: 'Legend', style: {fontWeight: 'bold', fontSize: '18px'}}));
+legend.add(ui.Panel({
+  widgets: [
+    ui.Label({
+      style: {
+        backgroundColor: '#3434eb',
+        width: '20px',
+        height: '20px',
+        margin: '2px',
+        border: '1px solid black'
+      }
+    }),
+    ui.Label({value: 'Juliflora', style: {margin: '2px 0 2px 6px', fontSize: '14px'}})
+  ],
+  layout: ui.Panel.Layout.Flow('horizontal'),
+  style: {margin: '2px 0'}
+}));
+
+Map.add(legend);
